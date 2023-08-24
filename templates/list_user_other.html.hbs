@@ -1,0 +1,106 @@
+{{#*inline "content"}}
+<div class="container-fluid">
+    <h1>{{user.name}}'s Gift Ideas</h1>
+    <br>
+    <table class="table table-striped" id="gift_table"><tbody>
+    </tbody></table>
+</div>
+
+<script>
+function postClaim(item_uuid) {
+    var posting = $.post( '/claim', { gift_uuid: item_uuid } )
+            .fail(function(response) {
+                alert('Error: ' + response.responseText);
+            });
+    posting.done(function( data ) {
+        if(data !== "Claimed!") {
+            alert(data);
+        } else {
+            var row = document.getElementById(item_uuid);
+            row.classList.add('table-success');
+            tds = row.getElementsByTagName("td");
+            tds[2].innerHTML = "<button title=\"Unclaim\" type=\"button\" class=\"btn btn-primary\" onclick=\"postUnclaim('" + item_uuid + "');\"><i class=\"bi-hand-thumbs-down\"></i></button>";
+            tds[3].innerHTML = "Claimed by: {{current_user.name}}";
+            var i = row.rowIndex + 1;
+            while(
+                i < row.parentNode.rows.length &&
+                row.parentNode.rows[i].getElementsByTagName("td")[0].innerHTML.startsWith("|")
+            ) {
+                var extrarow = row.parentNode.rows[i];
+                extrarow.classList.add('table-success');
+                i++;
+            }
+        }
+    });
+}
+function postUnclaim(item_uuid) {
+    var posting = $.post( '/unclaim', { gift_uuid: item_uuid } )
+            .fail(function(response) {
+                alert('Error: ' + response.responseText);
+            });
+    posting.done(function( data ) {
+        if(data !== "Unclaimed!") {
+            alert(data);
+        } else {
+            var row = document.getElementById(item_uuid);
+            row.classList.remove('table-success');
+            tds = row.getElementsByTagName("td");
+            tds[2].innerHTML = "<button title=\"Claim\" type=\"button\" class=\"btn btn-primary\" onclick=\"postClaim('" + item_uuid + "');\"><i class=\"bi-hand-thumbs-up\"></i></button>";
+            tds[3].innerHTML = "";
+            var i = row.rowIndex + 1;
+            while(
+                i < row.parentNode.rows.length &&
+                row.parentNode.rows[i].getElementsByTagName("td")[0].innerHTML.startsWith("|")
+            ) {
+                var extrarow = row.parentNode.rows[i];
+                extrarow.classList.remove('table-success');
+                i++;
+            }
+        }
+    });
+}
+function parseDataToTable() {
+    var initGiftData = {{{gifts_data}}};
+    var table = document.getElementById("gift_table");
+    initGiftData.forEach(element => {
+        var index = -1;
+        if(element.alternate_to_uuid) {
+            index = document.getElementById(element.alternate_to_uuid).rowIndex + 1;
+        }
+        var row = table.insertRow(index);
+        row.id = element.uuid;
+        var cell0 = row.insertCell(0);
+        var cell1 = row.insertCell(1);
+        var cell2 = row.insertCell(2);
+        var cell3 = row.insertCell(3);
+        if(element.alternate_to_uuid) {
+            cell0.innerHTML = "| Alternate: <a id='item_url' href=" + element.url + ">" + element.url + "</a>";
+        } else {
+            cell0.innerHTML = "<a id='item_url' href=" + element.url + ">" + element.url + "</a>";
+        }
+        cell1.innerHTML = element.comment;
+        cell2.style.width = "5%";
+        cell3.style.width = "15%";
+        if(!element.alternate_to_uuid) {
+            cell2.innerHTML = "<button title=\"title\" type=\"button\" class=\"btn btn-primary\" onclick=\"postClaim('" + element.uuid + "');\"><i class=\"bi-hand-thumbs-up\"></i></button>";
+            if(element.claimed) {
+                row.classList.add('table-success');
+                cell3.innerHTML = "Claimed by: " + element.claimed_by_name;
+                if(element.claimed_by_me) {
+                    cell2.innerHTML = "<button title=\"Unclaim\" type=\"button\" class=\"btn btn-primary\" onclick=\"postUnclaim('" + element.uuid + "');\"><i class=\"bi-hand-thumbs-down\"></i></button>";
+                } else {
+                    cell2.innerHTML = "<button type=\"button\" class=\"btn btn-primary disabled\"><i class=\"bi-hand-thumbs-up\"></i></button>";
+                }
+            }
+        } else {
+            row.classList = row.parentNode.rows[row.rowIndex - 1].classList;
+        }
+    });
+}
+
+(function() {
+    parseDataToTable();
+})();
+</script>
+{{/inline}}
+{{~> default_template~}}

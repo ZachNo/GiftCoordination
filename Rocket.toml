@@ -1,0 +1,14 @@
+[global.databases]
+sqlite_logs = { url = "./database.sqlite" }
+
+[default]
+address = "0.0.0.0"
+workers = 16
+keep_alive = 5
+
+[debug]
+port = 8000
+
+[release]
+port = 80
+secret_key = "ReplaceMe"

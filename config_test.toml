@@ -1,0 +1,6 @@
+access_key = "xxx"
+secret_key = "xxx"
+email_endpoint = "email-smtp.us-east-2.amazonaws.com"
+email_from = "Goord <goord@example.com>"
+admin_email = "goord@example.com"
+website_root = "https://example.com"
