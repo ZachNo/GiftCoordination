@@ -1,0 +1,142 @@
+{{#*inline "content"}}
+<div class="container-fluid">
+    <h1>{{list.name}}</h1>
+    <h2>{{user.name}}'s Gift Ideas</h2>
+    <br>
+    <table class="table table-striped" id="gift_table"><tbody>
+        <tr>
+            <td></td>
+            <td></td>
+            <td style="width: 5%"><button title="Add row" type="button" class="btn btn-primary" onclick="addRow();"><i class="bi-plus-circle"></i></button></td>
+            <td style="width: 5%"><button title="Save list" type="button" class="btn btn-success" onclick="saveGifts(this);">Save List</button></td>
+        </tr>
+    </tbody></table>
+</div>
+
+<script>
+var newRowId = 0;
+function addRow() {
+    var table = document.getElementById("gift_table");
+    var row = table.insertRow(table.rows.length - 1);
+    row.id = "newRow-" + newRowId++;
+    var cell0 = row.insertCell(0);
+    var cell1 = row.insertCell(1);
+    var cell2 = row.insertCell(2);
+    var cell3 = row.insertCell(3);
+    cell0.innerHTML = "<input name=\"item_url\" type=\"text\" class=\"form-control\" placeholder=\"Url\">";
+    cell1.innerHTML = "<input name=\"item_comment\" type=\"text\" class=\"form-control\" placeholder=\"Comment\">";
+    cell2.innerHTML = "<button title=\"Add alternative\" type=\"button\" class=\"btn btn-primary\" onclick=\"addAlternate(this);\"><i class=\"bi-node-plus\"></i></button>";
+    cell3.innerHTML = "<button title=\"Delete row\" type=\"button\" class=\"btn btn-danger delete-btn\" onclick=\"deleteRow(this);\"><i class=\"bi-trash\"></i></button>";
+    cell2.style.width = "5%";
+    cell3.style.width = "5%";
+}
+
+function deleteRow(el) {
+    el.parentNode.parentNode.remove();
+}
+
+function addAlternate(el) {
+    var table = document.getElementById("gift_table");
+    var row = table.insertRow(el.parentNode.parentNode.rowIndex + 1);
+    row.id = el.parentNode.parentNode.id + "-alt";
+    var cell0 = row.insertCell(0);
+    var cell1 = row.insertCell(1);
+    var cell2 = row.insertCell(2);
+    var cell3 = row.insertCell(3);
+    cell0.classList.add("input-group");
+    cell0.innerHTML = "<label class=\"col-form-label mx-3\">| Alternate:</label><input name=\"item_url\" type=\"text\" class=\"form-control\" placeholder=\"Url\">";
+    cell1.innerHTML = "<input name=\"item_comment\" type=\"text\" class=\"form-control\" placeholder=\"Comment\">";
+    cell3.innerHTML = "<button title=\"Delete row\" type=\"button\" class=\"btn btn-danger delete-btn\" onclick=\"deleteRow(this);\"><i class=\"bi-trash\"></i></button>";
+    cell2.style.width = "5%";
+    cell3.style.width = "5%";
+}
+
+async function saveGifts(el) {
+    el.innerHTML = "<div class=\"spinner-border\" role=\"status\"></div>"
+    el.classList.add("disabled");
+
+    var table = document.getElementById("gift_table");
+    var gifts = [];
+
+    for(let i = 0; i < table.rows.length - 1; i++) {
+        var row = table.rows[i];
+        var url_cell = row.getElementsByTagName("td")[0];
+        var comment_cell = row.getElementsByTagName("td")[1];
+        var uuid = row.id;
+        var alt_to = null;
+        if(row.id.endsWith('-alt')) {
+            uuid = null;
+            alt_to = row.id.slice(0,-4)
+        }
+        var url = url_cell.getElementsByTagName('input')[0].value;
+        var comment = comment_cell.getElementsByTagName('input')[0].value;
+
+        if(url.length == 0 && comment.length == 0) {
+            continue;
+        }
+
+        gifts.push({
+            uuid: uuid,
+            url: url,
+            comment: comment,
+            alternate_to_uuid: alt_to,
+        });
+    }
+
+    var posting = $.post( '/modifygiftlist', { gifts: gifts, list_uuid: '{{list.uuid}}' } )
+            .fail(function(response) {
+                alert('Error: ' + response.responseText);
+            });
+    posting.done(function( data ) {
+        if(data !== "Success!") {
+            alert(data);
+        } else {
+            el.innerHTML = "<i class=\"bi-check-circle\"></i>"
+        }
+    });
+
+    await new Promise(r => setTimeout(r, 2000));
+    el.innerHTML = "Save List"
+    el.classList.remove("disabled");
+}
+
+function parseDataToTable() {
+    var initGiftData = {{{gifts_data}}};
+    var table = document.getElementById("gift_table");
+    var item_index = 0;
+    initGiftData.forEach(element => {
+        var index = item_index;
+        if(element.alternate_to_uuid) {
+            index = document.getElementById(element.alternate_to_uuid).rowIndex + 1;
+        }
+        var row = table.insertRow(index);
+        item_index++;
+        row.id = element.uuid;
+        var cell0 = row.insertCell(0);
+        var cell1 = row.insertCell(1);
+        var cell2 = row.insertCell(2);
+        var cell3 = row.insertCell(3);
+        if(element.alternate_to_uuid) {
+            cell0.classList.add("input-group");
+            cell0.innerHTML = "<label class=\"col-form-label mx-3\">| Alternate:</label><input name=\"item_url\" type=\"text\" class=\"form-control\" placeholder=\"Url\" value=\"\">";
+        } else {
+            cell0.innerHTML = "<input name=\"item_url\" type=\"text\" class=\"form-control\" placeholder=\"Url\" value=\"\">";
+        }
+        cell0.firstChild.value = element.url;
+        cell1.innerHTML = "<input name=\"item_comment\" type=\"text\" class=\"form-control\" placeholder=\"Comment\" value=\"\">";
+        cell1.firstChild.value = element.comment;
+        cell2.style.width = "5%";
+        cell3.style.width = "5%";
+        if(!element.alternate_to_uuid) {
+            cell2.innerHTML = "<button title=\"Add alternative\" type=\"button\" class=\"btn btn-primary\" onclick=\"addAlternate(this);\"><i class=\"bi-node-plus\"></i></button>";
+        }
+        cell3.innerHTML = "<button title=\"Delete row\" type=\"button\" class=\"btn btn-danger delete-btn\" onclick=\"deleteRow(this);\"><i class=\"bi-trash\"></i></button>";
+    });
+}
+
+(function() {
+    parseDataToTable();
+})();
+</script>
+{{/inline}}
+{{~> default_template~}}
