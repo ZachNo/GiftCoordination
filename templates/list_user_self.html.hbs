@@ -119,10 +119,11 @@ function parseDataToTable() {
         if(element.alternate_to_uuid) {
             cell0.classList.add("input-group");
             cell0.innerHTML = "<label class=\"col-form-label mx-3\">| Alternate:</label><input name=\"item_url\" type=\"text\" class=\"form-control\" placeholder=\"Url\" value=\"\">";
+            cell0.childNodes[1].value = element.url;
         } else {
             cell0.innerHTML = "<input name=\"item_url\" type=\"text\" class=\"form-control\" placeholder=\"Url\" value=\"\">";
+            cell0.firstChild.value = element.url;
         }
-        cell0.firstChild.value = element.url;
         cell1.innerHTML = "<input name=\"item_comment\" type=\"text\" class=\"form-control\" placeholder=\"Comment\" value=\"\">";
         cell1.firstChild.value = element.comment;
         cell2.style.width = "5%";
