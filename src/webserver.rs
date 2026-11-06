@@ -3,13 +3,14 @@ use rocket::form::Form;
 use rocket::http::{Cookie, CookieJar, SameSite};
 use rocket::response::Redirect;
 use rocket_dyn_templates::Template;
+use serde::Serialize;
 use serde_json;
 use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::data::{
     ClaimGift, CreateList, DeleteList, ExportGift, Gift, List, ListPage, ListUser, ListUserPage,
-    ModifyGiftList, ModifyList, ModifyListPage, User, UserPage,
+    ModifyGiftList, ModifyList, ModifyListPage, UnsubscribePage, User, UserPage,
 };
 use crate::db::DbConn;
 use crate::email::Email;
@@ -59,8 +60,52 @@ impl WebServer {
         Template::render("user", &context)
     }
 
+    /// GET only shows a confirmation, so mail scanners that prefetch links can't unsubscribe anyone.
+    pub async fn unsubscribe_page(user_token: String, conn: &DbConn) -> Template {
+        if conn
+            .user_uuid_from_auth_token(user_token.to_owned())
+            .await
+            .is_err()
+        {
+            return WebServer::not_found().await;
+        }
+        Template::render(
+            "unsubscribe",
+            &UnsubscribePage {
+                token: user_token,
+                done: false,
+            },
+        )
+    }
+
+    pub async fn unsubscribe(user_token: String, conn: &DbConn) -> Template {
+        let user_uuid = match conn.user_uuid_from_auth_token(user_token.to_owned()).await {
+            Ok(u) => u,
+            Err(_) => return WebServer::not_found().await,
+        };
+        let mut user = conn
+            .user_from_uuid(user_uuid.to_owned(), user_uuid)
+            .await
+            .unwrap();
+        user.do_email = false;
+        conn.modify_user(user).await;
+        Template::render(
+            "unsubscribe",
+            &UnsubscribePage {
+                token: user_token,
+                done: true,
+            },
+        )
+    }
+
     pub async fn list_page(list_uuid: String, cookies: &CookieJar<'_>, conn: &DbConn) -> Template {
         let current_user = WebServer::get_current_user(cookies, conn).await.unwrap();
+        if !conn
+            .is_user_in_list(current_user.uuid.to_owned(), list_uuid.to_owned())
+            .await
+        {
+            return WebServer::not_found().await;
+        }
         let users = conn
             .users_of_list(list_uuid.to_owned(), current_user.uuid.to_owned())
             .await
@@ -89,6 +134,16 @@ impl WebServer {
         conn: &DbConn,
     ) -> Template {
         let current_user = WebServer::get_current_user(cookies, conn).await.unwrap();
+        // Both the viewer and the viewed user must belong to this list
+        if !conn
+            .is_user_in_list(current_user.uuid.to_owned(), list_uuid.to_owned())
+            .await
+            || !conn
+                .is_user_in_list(user_uuid.to_owned(), list_uuid.to_owned())
+                .await
+        {
+            return WebServer::not_found().await;
+        }
         let requested_user = conn
             .user_from_uuid(user_uuid.to_owned(), current_user.uuid.to_owned())
             .await
@@ -108,23 +163,28 @@ impl WebServer {
             .unwrap();
         let gifts_export = gifts
             .iter()
-            .map(|gift| ExportGift {
-                uuid: gift.uuid.to_owned(),
-                url: gift.url.to_owned(),
-                comment: gift.comment.to_owned(),
-                claimed: gift.claimed,
-                claimed_by_name: match &gift.claimed_by {
-                    Some(x) => x.name.to_owned(),
-                    None => "null".to_string(),
-                },
-                claimed_by_me: match &gift.claimed_by {
-                    Some(x) => x.is_me,
-                    None => false,
-                },
-                alternate_to_uuid: gift.alternate_to_uuid.to_owned(),
+            .map(|gift| {
+                // Never send claim details to the gift's owner; it would spoil the surprise
+                let (claimed, claimed_by_name, claimed_by_me) = if is_me {
+                    (false, "".to_string(), false)
+                } else {
+                    match &gift.claimed_by {
+                        Some(x) => (gift.claimed, x.name.to_owned(), x.is_me),
+                        None => (gift.claimed, "".to_string(), false),
+                    }
+                };
+                ExportGift {
+                    uuid: gift.uuid.to_owned(),
+                    url: gift.url.to_owned(),
+                    comment: gift.comment.to_owned(),
+                    claimed,
+                    claimed_by_name,
+                    claimed_by_me,
+                    alternate_to_uuid: gift.alternate_to_uuid.to_owned(),
+                }
             })
             .collect::<Vec<_>>();
-        let gifts_json = serde_json::to_string(&gifts_export).unwrap();
+        let gifts_json = WebServer::json_for_script(&gifts_export);
 
         let context = ListUserPage {
             user: requested_user,
@@ -186,7 +246,13 @@ impl WebServer {
         conn: &DbConn,
     ) -> String {
         let current_user = WebServer::get_current_user(cookies, conn).await.unwrap();
-        let mut gift = conn
+        if !conn
+            .can_user_see_gift(current_user.uuid.to_owned(), claim.gift_uuid.to_owned())
+            .await
+        {
+            return "Item not found".to_string();
+        }
+        let gift = conn
             .gift_from_uuid(claim.gift_uuid.to_owned(), current_user.uuid.to_owned())
             .await
             .unwrap();
@@ -196,9 +262,12 @@ impl WebServer {
         if gift.claimed {
             return format!("Item already claimed by {}", gift.claimed_by.unwrap().name);
         }
-        gift.claimed = true;
-        gift.claimed_by = Some(current_user);
-        conn.modify_gift(gift).await;
+        if !conn
+            .try_claim_gift(gift.uuid, current_user.uuid.to_owned())
+            .await
+        {
+            return "Someone else just claimed this item".to_string();
+        }
 
         "Claimed!".to_string()
     }
@@ -209,7 +278,13 @@ impl WebServer {
         conn: &DbConn,
     ) -> String {
         let current_user = WebServer::get_current_user(cookies, conn).await.unwrap();
-        let mut gift = conn
+        if !conn
+            .can_user_see_gift(current_user.uuid.to_owned(), claim.gift_uuid.to_owned())
+            .await
+        {
+            return "Item not found".to_string();
+        }
+        let gift = conn
             .gift_from_uuid(claim.gift_uuid.to_owned(), current_user.uuid.to_owned())
             .await
             .unwrap();
@@ -223,9 +298,12 @@ impl WebServer {
             return format!("Item claimed by {}", gift.claimed_by.unwrap().name);
         }
 
-        gift.claimed = false;
-        gift.claimed_by = None;
-        conn.modify_gift(gift).await;
+        if !conn
+            .try_unclaim_gift(gift.uuid, current_user.uuid.to_owned())
+            .await
+        {
+            return "Item isn't claimed by you".to_string();
+        }
 
         "Unclaimed!".to_string()
     }
@@ -236,17 +314,11 @@ impl WebServer {
         conn: &DbConn,
     ) -> String {
         let current_user = WebServer::get_current_user(cookies, conn).await.unwrap();
-        let user_lists = conn
-            .lists_of_user(current_user.uuid.to_owned())
+        if !conn
+            .is_user_in_list(current_user.uuid.to_owned(), gifts.list_uuid.to_owned())
             .await
-            .unwrap();
-        if user_lists
-            .iter()
-            .filter(|list| list.uuid == gifts.list_uuid)
-            .collect::<Vec<_>>()
-            .is_empty()
         {
-            "Unauthorized".to_string();
+            return "Unauthorized".to_string();
         }
 
         let mut new_uuid_map: HashMap<String, String> = HashMap::new();
@@ -315,7 +387,7 @@ impl WebServer {
                 conn.create_gift(gift_data, gifts.list_uuid.to_owned())
                     .await;
             } else {
-                let mut gift_data = conn
+                let gift_data = conn
                     .gift_from_uuid(gift.uuid.to_owned(), current_user.uuid.to_owned())
                     .await
                     .unwrap();
@@ -323,9 +395,12 @@ impl WebServer {
                     return "Can't modify item you don't own".to_string();
                 }
 
-                gift_data.url = gift.url.to_owned();
-                gift_data.comment = gift.comment.to_owned();
-                conn.modify_gift(gift_data).await;
+                conn.update_gift_details(
+                    gift_data.uuid,
+                    gift.url.to_owned(),
+                    gift.comment.to_owned(),
+                )
+                .await;
             }
         }
         "Success!".to_string()
@@ -349,6 +424,9 @@ impl WebServer {
         };
         conn.create_list(list_data).await;
         for list_user in list.users.to_owned() {
+            if list_user.name.is_empty() || list_user.email.is_empty() {
+                continue;
+            }
             WebServer::create_user_and_add_to_list(
                 list.name.to_owned(),
                 list_uuid.to_owned(),
@@ -433,7 +511,7 @@ impl WebServer {
         let user = match conn.user_from_email(list_user.email.to_owned()).await {
             Ok(u) => u,
             Err(_) => {
-                let mut rng = StdRng::from_entropy();
+                let mut rng = StdRng::from_os_rng();
                 let mut new_token: [u8; 256] = [0; 256];
                 rng.fill_bytes(&mut new_token);
                 let new_user_uuid = Uuid::new_v4().to_string();
@@ -443,6 +521,7 @@ impl WebServer {
                     name: list_user.name.to_owned(),
                     can_create: false,
                     is_me: false,
+                    do_email: true,
                 };
                 conn.create_user(new_user, hex::encode(new_token)).await;
                 conn.user_from_uuid(new_user_uuid, current_user_uuid)
@@ -455,7 +534,19 @@ impl WebServer {
             .auth_token_from_user(user.uuid.to_owned())
             .await
             .unwrap();
-        WebServer::send_email_for_list(list_name, user, auth_token).await;
+        if user.do_email {
+            WebServer::send_email_for_list(list_name, user, auth_token).await;
+        }
+    }
+
+    /// Serializes data for embedding inside a `<script>` block. Escaping `<`, `>` and `&`
+    /// keeps user text like `</script>` from closing the block early.
+    fn json_for_script<T: Serialize>(value: &T) -> String {
+        serde_json::to_string(value)
+            .unwrap()
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026")
     }
 
     fn set_user_cookie(user_uuid: String, cookies: &CookieJar<'_>) {

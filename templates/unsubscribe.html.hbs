@@ -1,0 +1,15 @@
+{{#*inline "content"}}
+    <div class="container-fluid vstack gap-2 mx-auto">
+        {{#if done}}
+        <h2 class="text-center">Unsubscribed</h2>
+        <p class="text-center">You won't get any more invite emails. Contact me to get resubscribed if you want.</p>
+        {{else}}
+        <h2 class="text-center">Unsubscribe from emails?</h2>
+        <p class="text-center">You'll stop getting emails when you're added to new lists.</p>
+        <form class="text-center" method="post" action="/unsubscribe/{{token}}">
+            <button type="submit" class="btn btn-danger">Unsubscribe</button>
+        </form>
+        {{/if}}
+    </div>
+{{/inline}}
+{{~> default_template~}}

@@ -24,12 +24,12 @@ impl<'r> FromRequest<'r> for Auth {
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Auth, Self::Error> {
         let user_uuid = WebServer::get_user_cookie(req.cookies());
-        return match user_uuid {
+        match user_uuid {
             Ok(_) => Outcome::Success(Auth {
                 user_token: "".to_string(),
             }),
-            Err(_) => Outcome::Failure((Status::NotFound, ())),
-        };
+            Err(_) => Outcome::Error((Status::NotFound, ())),
+        }
     }
 }
 
@@ -159,6 +159,16 @@ async fn modify_item_list(
     WebServer::modify_gift_list(gifts, cookies, &conn).await
 }
 
+#[get("/unsubscribe/<usertoken>")]
+async fn unsubscribe_page(usertoken: String, conn: DbConn) -> Template {
+    WebServer::unsubscribe_page(usertoken, &conn).await
+}
+
+#[post("/unsubscribe/<usertoken>")]
+async fn unsubscribe(usertoken: String, conn: DbConn) -> Template {
+    WebServer::unsubscribe(usertoken, &conn).await
+}
+
 #[launch]
 fn rocket() -> _ {
     rocket::build()
@@ -178,6 +188,8 @@ fn rocket() -> _ {
                 claim_gift,
                 unclaim_gift,
                 modify_item_list,
+                unsubscribe_page,
+                unsubscribe,
             ],
         )
         .mount("/", FileServer::from(relative!("static")))

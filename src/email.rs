@@ -37,7 +37,7 @@ impl Email {
             email_endpoint: config.email_endpoint,
             email_from: config.email_from,
             admin_email: config.admin_email,
-            website_root: config.website_root,
+            website_root: config.website_root.trim_end_matches('/').to_string(),
         }
     }
 
@@ -82,11 +82,15 @@ impl Email {
                                             user_name,
                                             list_name,
                                             link: format!(
-                                                "{}login/{}",
+                                                "{}/login/{}",
                                                 self.website_root.as_str(),
                                                 user_auth_token
                                             ),
-                                            admin_email: self.admin_email.to_string(),
+                                            unsubscribe: format!(
+                                                "{}/unsubscribe/{}",
+                                                self.website_root.as_str(),
+                                                user_auth_token
+                                            ),
                                         },
                                     )
                                     .unwrap(),

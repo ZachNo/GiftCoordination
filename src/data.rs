@@ -8,6 +8,7 @@ pub struct User {
     pub name: String,
     pub can_create: bool,
     pub is_me: bool,
+    pub do_email: bool,
 }
 
 #[derive(Serialize)]
@@ -46,7 +47,7 @@ pub struct InviteEmail {
     pub user_name: String,
     pub list_name: String,
     pub link: String,
-    pub admin_email: String,
+    pub unsubscribe: String,
 }
 
 // Page Contexts
@@ -76,6 +77,12 @@ pub struct ModifyListPage {
     pub current_user: User,
     pub list: List,
     pub users: Vec<ListUser>,
+}
+
+#[derive(Serialize)]
+pub struct UnsubscribePage {
+    pub token: String,
+    pub done: bool,
 }
 
 // Page Input

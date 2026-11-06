@@ -2,7 +2,7 @@
 <div class="container-fluid">
     <h1>{{user.name}}'s Gift Ideas</h1>
     <br>
-    <table class="table table-striped" id="gift_table"><tbody>
+    <table class="table table-striped" id="gift_table" data-current-user="{{current_user.name}}"><tbody>
     </tbody></table>
 </div>
 
@@ -20,7 +20,7 @@ function postClaim(item_uuid) {
             row.classList.add('table-success');
             tds = row.getElementsByTagName("td");
             tds[2].innerHTML = "<button title=\"Unclaim\" type=\"button\" class=\"btn btn-primary\" onclick=\"postUnclaim('" + item_uuid + "');\"><i class=\"bi-hand-thumbs-down\"></i></button>";
-            tds[3].innerHTML = "Claimed by: {{current_user.name}}";
+            tds[3].textContent = "Claimed by: " + document.getElementById("gift_table").dataset.currentUser;
             var i = row.rowIndex + 1;
             while(
                 i < row.parentNode.rows.length &&
@@ -59,6 +59,32 @@ function postUnclaim(item_uuid) {
         }
     });
 }
+// Only http(s) links become clickable; anything else (e.g. javascript:) is shown as plain text.
+function safeHref(url) {
+    var candidate = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : "https://" + url;
+    try {
+        var parsed = new URL(candidate);
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+            return parsed.href;
+        }
+    } catch (e) {}
+    return null;
+}
+function renderUrlCell(cell, url, isAlternate) {
+    if (isAlternate) {
+        cell.appendChild(document.createTextNode("| Alternate: "));
+    }
+    var href = safeHref(url);
+    if (href) {
+        var link = document.createElement("a");
+        link.href = href;
+        link.rel = "noopener noreferrer";
+        link.textContent = url;
+        cell.appendChild(link);
+    } else {
+        cell.appendChild(document.createTextNode(url));
+    }
+}
 function parseDataToTable() {
     var initGiftData = {{{gifts_data}}};
     var table = document.getElementById("gift_table");
@@ -73,19 +99,15 @@ function parseDataToTable() {
         var cell1 = row.insertCell(1);
         var cell2 = row.insertCell(2);
         var cell3 = row.insertCell(3);
-        if(element.alternate_to_uuid) {
-            cell0.innerHTML = "| Alternate: <a id='item_url' href=" + element.url + ">" + element.url + "</a>";
-        } else {
-            cell0.innerHTML = "<a id='item_url' href=" + element.url + ">" + element.url + "</a>";
-        }
-        cell1.innerHTML = element.comment;
+        renderUrlCell(cell0, element.url, !!element.alternate_to_uuid);
+        cell1.textContent = element.comment;
         cell2.style.width = "5%";
         cell3.style.width = "15%";
         if(!element.alternate_to_uuid) {
             cell2.innerHTML = "<button title=\"title\" type=\"button\" class=\"btn btn-primary\" onclick=\"postClaim('" + element.uuid + "');\"><i class=\"bi-hand-thumbs-up\"></i></button>";
             if(element.claimed) {
                 row.classList.add('table-success');
-                cell3.innerHTML = "Claimed by: " + element.claimed_by_name;
+                cell3.textContent = "Claimed by: " + element.claimed_by_name;
                 if(element.claimed_by_me) {
                     cell2.innerHTML = "<button title=\"Unclaim\" type=\"button\" class=\"btn btn-primary\" onclick=\"postUnclaim('" + element.uuid + "');\"><i class=\"bi-hand-thumbs-down\"></i></button>";
                 } else {

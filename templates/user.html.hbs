@@ -8,7 +8,7 @@
     {{#if this.im_owner}}
     <div class="col-2 d-grid p-1">
         <a type="button" class="btn btn-success" href="/modifylist/{{this.uuid}}"><i class="bi-pencil-square"></i></a>
-        <a type="button" class="btn btn-danger disabled" href="/deletelist/{{this.uuid}}"><i class="bi-trash"></i></a>
+        <button type="button" class="btn btn-danger delete-list" title="Delete list" data-uuid="{{this.uuid}}" data-name="{{this.name}}"><i class="bi-trash"></i></button>
     </div>
     {{/if}}
     </div>
@@ -17,5 +17,24 @@
     <a type="button" class="btn btn-success btn-lg" href="/createlist">Create new list</a>
     {{/if}}
 </div>
+<script>
+$('.delete-list').on("click", function() {
+    var uuid = this.dataset.uuid;
+    if (!confirm('Delete "' + this.dataset.name + '"? All gifts and claims on it will be lost.')) {
+        return;
+    }
+    $.post('/deletelist', { uuid: uuid })
+        .done(function(data) {
+            if (data !== "Success!") {
+                alert(data);
+            } else {
+                window.location.reload();
+            }
+        })
+        .fail(function(response) {
+            alert('Error: ' + response.responseText);
+        });
+});
+</script>
 {{/inline}}
 {{~> default_template~}}

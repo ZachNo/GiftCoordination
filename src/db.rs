@@ -52,7 +52,7 @@ impl DbConn {
         self.run(move |db| {
             db.query_row(
                 format!(
-                    "SELECT user_uuid, name, email, can_create FROM {} WHERE email = ?1",
+                    "SELECT user_uuid, name, email, can_create, do_email FROM {} WHERE email = ?1",
                     DbConn::USER_TABLE
                 )
                 .as_str(),
@@ -64,6 +64,7 @@ impl DbConn {
                         email: row.get(2).unwrap(),
                         can_create: row.get(3).unwrap(),
                         is_me: false,
+                        do_email: row.get(4).unwrap(),
                     })
                 },
             )
@@ -79,7 +80,7 @@ impl DbConn {
         self.run(move |db| {
             db.query_row(
                 format!(
-                    "SELECT user_uuid, name, email, can_create FROM {} WHERE user_uuid = ?1",
+                    "SELECT user_uuid, name, email, can_create, do_email FROM {} WHERE user_uuid = ?1",
                     DbConn::USER_TABLE
                 )
                 .as_str(),
@@ -91,6 +92,7 @@ impl DbConn {
                         email: row.get(2).unwrap(),
                         can_create: row.get(3).unwrap(),
                         is_me: current_uuid.eq(&user_uuid),
+                        do_email: row.get(4).unwrap(),
                     })
                 },
             )
@@ -161,7 +163,7 @@ impl DbConn {
         self.run(move |db| {
             db.prepare(
                 format!(
-                    "SELECT r.user_uuid, r.email, r.name, r.can_create \
+                    "SELECT r.user_uuid, r.email, r.name, r.can_create, r.do_email \
                 FROM {} l \
                 INNER JOIN {} r ON r.user_uuid = l.user_uuid \
                 WHERE l.list_uuid = ?1",
@@ -178,6 +180,7 @@ impl DbConn {
                     name: row.get(2).unwrap(),
                     can_create: row.get(3).unwrap(),
                     is_me: current_user_uuid == user_uuid,
+                    do_email: row.get(4).unwrap(),
                 })
             })
             .unwrap()
@@ -212,6 +215,7 @@ impl DbConn {
                                        name: row.get(7).unwrap(),
                                        can_create: false,
                                        is_me: uuid == current_user_uuid,
+                                       do_email: false,
                                    }),
                                    Err(_) => None,
                                };
@@ -253,6 +257,7 @@ impl DbConn {
                                      name: row.get(7).unwrap(),
                                      can_create: false,
                                      is_me: uuid == current_user_uuid,
+                                     do_email: false,
                                  }),
                                  Err(_) => None,
                              };
@@ -274,8 +279,8 @@ impl DbConn {
         self.run(move |db| {
             db.execute(
                 format!(
-                    "INSERT INTO {} (user_uuid, auth_token, email, name, can_create) \
-                VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO {} (user_uuid, auth_token, email, name, can_create, do_email) \
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     DbConn::USER_TABLE
                 )
                 .as_str(),
@@ -284,7 +289,8 @@ impl DbConn {
                     auth_token,
                     user.email,
                     user.name,
-                    user.can_create
+                    user.can_create,
+                    user.do_email,
                 ],
             )
         })
@@ -357,12 +363,12 @@ impl DbConn {
         self.run(move |db| {
             db.execute(
                 format!(
-                    "UPDATE {} SET name = ?1, email = ?2, can_crease = ?3 \
-                WHERE user_uuid = ?4",
+                    "UPDATE {} SET name = ?1, email = ?2, can_create = ?3, do_email = ?4 \
+                WHERE user_uuid = ?5",
                     DbConn::USER_TABLE
                 )
                 .as_str(),
-                params![user.name, user.email, user.can_create, user.uuid],
+                params![user.name, user.email, user.can_create, user.do_email, user.uuid],
             )
         })
         .await
@@ -385,132 +391,162 @@ impl DbConn {
         .unwrap();
     }
 
-    pub async fn modify_gift(self: &DbConn, gift: Gift) {
+    /// Updates only the owner-editable fields, so a concurrent claim is never overwritten.
+    pub async fn update_gift_details(
+        self: &DbConn,
+        gift_uuid: String,
+        url: String,
+        comment: String,
+    ) {
         self.run(move |db| {
             db.execute(
                 format!(
-                    "UPDATE {} SET url = ?1, comment = ?2, claimed = ?3, claimed_by = ?5 \
-                WHERE gift_uuid = ?4",
+                    "UPDATE {} SET url = ?1, comment = ?2 WHERE gift_uuid = ?3",
                     DbConn::GIFT_TABLE
                 )
                 .as_str(),
-                params![
-                    gift.url,
-                    gift.comment,
-                    gift.claimed,
-                    gift.uuid,
-                    gift.claimed_by
-                        .unwrap_or(User {
-                            uuid: "None".to_string(),
-                            email: "".to_string(),
-                            name: "".to_string(),
-                            can_create: false,
-                            is_me: false,
-                        })
-                        .uuid
-                ],
+                params![url, comment, gift_uuid],
             )
         })
         .await
         .unwrap();
     }
 
-    pub async fn delete_user(self: &DbConn, user_uuid: String) {
-        // Unclaim items from user
+    /// Atomically claims an unclaimed gift not owned by the user. Returns false if it lost the race.
+    pub async fn try_claim_gift(self: &DbConn, gift_uuid: String, user_uuid: String) -> bool {
         self.run(move |db| {
             db.execute(
-                format!("DELETE FROM {} WHERE user_uuid = ?1", DbConn::USER_TABLE).as_str(),
-                params![user_uuid],
+                format!(
+                    "UPDATE {} SET claimed = 1, claimed_by = ?2 \
+                WHERE gift_uuid = ?1 AND claimed = 0 AND user_uuid != ?2",
+                    DbConn::GIFT_TABLE
+                )
+                .as_str(),
+                params![gift_uuid, user_uuid],
             )
-            .unwrap();
+        })
+        .await
+        .unwrap()
+            == 1
+    }
+
+    /// Atomically releases a gift claimed by the user. Returns false if it wasn't theirs.
+    pub async fn try_unclaim_gift(self: &DbConn, gift_uuid: String, user_uuid: String) -> bool {
+        self.run(move |db| {
             db.execute(
                 format!(
-                    "DELETE FROM {} WHERE user_uuid = ?1",
+                    "UPDATE {} SET claimed = 0, claimed_by = 'None' \
+                WHERE gift_uuid = ?1 AND claimed = 1 AND claimed_by = ?2",
+                    DbConn::GIFT_TABLE
+                )
+                .as_str(),
+                params![gift_uuid, user_uuid],
+            )
+        })
+        .await
+        .unwrap()
+            == 1
+    }
+
+    pub async fn is_user_in_list(self: &DbConn, user_uuid: String, list_uuid: String) -> bool {
+        self.run(move |db| {
+            db.prepare(
+                format!(
+                    "SELECT 1 FROM {} WHERE list_uuid = ?1 AND user_uuid = ?2",
                     DbConn::LIST_TO_USER_TABLE
                 )
                 .as_str(),
-                params![user_uuid],
             )
-            .unwrap();
-            db.execute(
-                format!(
-                    "DELETE FROM {} l \
-                INNER JOIN {} r ON r.gift_uuid = l.gift_uuid \
-                INNER JOIN {} z ON z.list_uuid = r.list_uuid \
-                WHERE z.owner = ?1",
-                    DbConn::GIFT_TABLE,
-                    DbConn::LIST_TO_GIFT_TABLE,
-                    DbConn::LIST_TABLE
-                )
-                .as_str(),
-                params![user_uuid],
-            )
-            .unwrap();
-            db.execute(
-                format!(
-                    "DELETE FROM {} l \
-                INNER JOIN {} r ON r.list_uuid = l.list_uuid \
-                WHERE r.owner = ?1",
-                    DbConn::LIST_TO_GIFT_TABLE,
-                    DbConn::LIST_TABLE
-                )
-                .as_str(),
-                params![user_uuid],
-            )
-            .unwrap();
-            db.execute(
-                format!("DELETE FROM {} WHERE owner = ?1", DbConn::LIST_TABLE).as_str(),
-                params![user_uuid],
-            )
-            .unwrap();
-            db.execute(
-                format!("DELETE FROM {} WHERE user_uuid = ?1", DbConn::GIFT_TABLE).as_str(),
-                params![user_uuid],
-            )
-            .unwrap();
+            .and_then(|mut stmt| stmt.exists(params![list_uuid, user_uuid]))
         })
-        .await;
+        .await
+        .unwrap_or(false)
+    }
+
+    /// True if the gift is on any list the user is a member of.
+    pub async fn can_user_see_gift(self: &DbConn, user_uuid: String, gift_uuid: String) -> bool {
+        self.run(move |db| {
+            db.prepare(
+                format!(
+                    "SELECT 1 FROM {} g \
+                INNER JOIN {} u ON u.list_uuid = g.list_uuid \
+                WHERE g.gift_uuid = ?1 AND u.user_uuid = ?2",
+                    DbConn::LIST_TO_GIFT_TABLE,
+                    DbConn::LIST_TO_USER_TABLE
+                )
+                .as_str(),
+            )
+            .and_then(|mut stmt| stmt.exists(params![gift_uuid, user_uuid]))
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// Runs each statement with `?1` bound to `id`, all inside one transaction.
+    fn execute_all_in_transaction(
+        db: &mut rusqlite::Connection,
+        statements: &[String],
+        id: &str,
+    ) -> Result<(), Error> {
+        let tx = db.transaction()?;
+        for sql in statements {
+            tx.execute(sql.as_str(), params![id])?;
+        }
+        tx.commit()
+    }
+
+    #[allow(dead_code)]
+    pub async fn delete_user(self: &DbConn, user_uuid: String) {
+        let statements = [
+            // Release anything this user had claimed
+            format!(
+                "UPDATE {} SET claimed = 0, claimed_by = 'None' WHERE claimed_by = ?1",
+                DbConn::GIFT_TABLE
+            ),
+            // Remove everything belonging to lists this user owns
+            format!(
+                "DELETE FROM {} WHERE gift_uuid IN \
+                (SELECT li.gift_uuid FROM {} li INNER JOIN {} l ON l.list_uuid = li.list_uuid WHERE l.owner = ?1)",
+                DbConn::GIFT_TABLE,
+                DbConn::LIST_TO_GIFT_TABLE,
+                DbConn::LIST_TABLE
+            ),
+            format!(
+                "DELETE FROM {} WHERE list_uuid IN (SELECT list_uuid FROM {} WHERE owner = ?1)",
+                DbConn::LIST_TO_GIFT_TABLE,
+                DbConn::LIST_TABLE
+            ),
+            format!(
+                "DELETE FROM {} WHERE list_uuid IN (SELECT list_uuid FROM {} WHERE owner = ?1)",
+                DbConn::LIST_TO_USER_TABLE,
+                DbConn::LIST_TABLE
+            ),
+            format!("DELETE FROM {} WHERE owner = ?1", DbConn::LIST_TABLE),
+            // Remove the user's own gifts on other lists, then the user
+            format!("DELETE FROM {} WHERE user_uuid = ?1", DbConn::LIST_TO_GIFT_TABLE),
+            format!("DELETE FROM {} WHERE user_uuid = ?1", DbConn::GIFT_TABLE),
+            format!("DELETE FROM {} WHERE user_uuid = ?1", DbConn::LIST_TO_USER_TABLE),
+            format!("DELETE FROM {} WHERE user_uuid = ?1", DbConn::USER_TABLE),
+        ];
+        self.run(move |db| DbConn::execute_all_in_transaction(db, &statements, &user_uuid))
+            .await
+            .unwrap();
     }
 
     pub async fn delete_list(self: &DbConn, list_uuid: String) {
-        self.run(move |db| {
-            db.execute(
-                format!("DELETE FROM {} WHERE list_uuid = ?1", DbConn::LIST_TABLE).as_str(),
-                params![list_uuid],
-            )
+        let statements = [
+            format!(
+                "DELETE FROM {} WHERE gift_uuid IN (SELECT gift_uuid FROM {} WHERE list_uuid = ?1)",
+                DbConn::GIFT_TABLE,
+                DbConn::LIST_TO_GIFT_TABLE
+            ),
+            format!("DELETE FROM {} WHERE list_uuid = ?1", DbConn::LIST_TO_GIFT_TABLE),
+            format!("DELETE FROM {} WHERE list_uuid = ?1", DbConn::LIST_TO_USER_TABLE),
+            format!("DELETE FROM {} WHERE list_uuid = ?1", DbConn::LIST_TABLE),
+        ];
+        self.run(move |db| DbConn::execute_all_in_transaction(db, &statements, &list_uuid))
+            .await
             .unwrap();
-            db.execute(
-                format!(
-                    "DELETE FROM {} WHERE list_uuid = ?1",
-                    DbConn::LIST_TO_USER_TABLE
-                )
-                .as_str(),
-                params![list_uuid],
-            )
-            .unwrap();
-            db.execute(
-                format!(
-                    "DELETE FROM {} l \
-                INNER JOIN {} r ON r.gift_uuid = l.gift_uuid \
-                WHERE l.list_uuid = ?1",
-                    DbConn::GIFT_TABLE,
-                    DbConn::LIST_TO_GIFT_TABLE
-                )
-                .as_str(),
-                params![list_uuid],
-            )
-            .unwrap();
-            db.execute(
-                format!(
-                    "DELETE FROM {} WHERE list_uuid = ?1",
-                    DbConn::LIST_TO_GIFT_TABLE
-                )
-                .as_str(),
-                params![list_uuid],
-            )
-            .unwrap();
-        })
-        .await;
     }
 
     pub async fn delete_gift(self: &DbConn, gift_uuid: String) {
@@ -544,13 +580,34 @@ impl DbConn {
                         auth_token  TEXT NOT NULL,
                         email       TEXT NOT NULL,
                         name        TEXT NOT NULL,
-                        can_create  BOOL NOT NULL
+                        can_create  BOOL NOT NULL,
+                        do_email    BOOL NOT NULL DEFAULT 1
                         )",
                     DbConn::USER_TABLE
                 )
                 .as_str(),
                 [],
             )
+        })
+        .await
+        .unwrap();
+
+        // Migration: databases created before email opt-out lack the do_email column
+        conn.run(move |db| {
+            let has_do_email = db
+                .prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = 'do_email'")?
+                .exists(params![DbConn::USER_TABLE])?;
+            if !has_do_email {
+                db.execute(
+                    format!(
+                        "ALTER TABLE {} ADD COLUMN do_email BOOL NOT NULL DEFAULT 1",
+                        DbConn::USER_TABLE
+                    )
+                    .as_str(),
+                    [],
+                )?;
+            }
+            Ok::<(), Error>(())
         })
         .await
         .unwrap();
